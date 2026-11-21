@@ -34,19 +34,29 @@ def generate_launch_description():
         if type(settings[key]) is not bool:
             raise ValueError(f'{key} must be a YAML boolean')
 
-    map_file = Path(settings['map_file']).expanduser().resolve()
+    configured_map = Path(str(settings['map_file'])).expanduser()
+    map_file = (configured_map if configured_map.is_absolute() else share / 'map' / configured_map).resolve()
     if not map_file.is_file():
         raise FileNotFoundError(f'Localization PCD is missing: {map_file}')
 
     dds_profile = settings['dds_profile']
     if dds_profile not in ('local', 'system'):
         raise ValueError('dds_profile must be local or system')
+    rviz_view = settings.get('rviz_view', 'map')
+    if rviz_view not in ('map', 'odom'):
+        raise ValueError('rviz_view must be map or odom')
+
+    fast_lio_config = Path(str(settings.get('fast_lio_config', 'rc_localization_fast_lio.yaml')))
+    if not fast_lio_config.is_absolute():
+        fast_lio_config = config_dir / fast_lio_config
+    if mode == 'live' and not fast_lio_config.is_file():
+        raise FileNotFoundError(f'FAST-LIO configuration is missing: {fast_lio_config}')
 
     clock = {'use_sim_time': settings['use_sim_time']}
     actions = [LogInfo(msg=(
         f'PCD localization: {map_file}; input_mode={mode}. '
-        'Localization starts without an initial position. '
-        'RViz 2D Pose Estimate publishes a map-frame base_link seed to /initialpose.'
+        'Automatic localization starts without an initial position and publishes no /initialpose. '
+        'The production localizer also ignores RViz 2D Pose Estimate input.'
     ))]
 
     actions.append(SetEnvironmentVariable('ROS_DOMAIN_ID', str(settings['ros_domain_id'])))
@@ -67,7 +77,7 @@ def generate_launch_description():
             output='screen',
             parameters=[clock, {
                 'robot_description': ParameterValue(
-                    Command(['xacro ', str(share / 'urdf' / 'reality' / 'model.xacro')]),
+                    Command(['xacro ', str(share / 'urdf' / 'reality' / 'rc_localization_model.xacro')]),
                     value_type=str,
                 ),
             }],
@@ -86,7 +96,7 @@ def generate_launch_description():
                 'publish_freq': 40.0,
                 'output_data_type': 0,
                 'frame_id': 'livox_frame',
-                'user_config_path': str(config_dir / 'MID360_driver.json'),
+                'user_config_path': str(config_dir / 'rc_localization_mid360.json'),
             }],
         ))
 
@@ -95,7 +105,7 @@ def generate_launch_description():
             executable='fastlio_mapping',
             name='bbs_fast_lio',
             output='screen',
-            parameters=[str(config_dir / 'fast_lio.yaml'), clock, {
+            parameters=[str(fast_lio_config), clock, {
                 'map_file_path': '',
                 'pcd_save.pcd_save_en': False,
                 'publish.scan_publish_en': True,
@@ -126,7 +136,8 @@ def generate_launch_description():
             executable='rviz2',
             name='bbs_localization_rviz',
             output='screen',
-            arguments=['-d', str(share / 'rviz' / 'rc_localization.rviz')],
+            arguments=['-d', str(share / 'rviz' / (
+                'rc_localization_odom.rviz' if rviz_view == 'odom' else 'rc_localization.rviz'))],
             parameters=[clock],
         ))
 

@@ -1,0 +1,63 @@
+<?xml version="1.0" ?>
+<!-- Localization-only copy of the measured TF tree used by mapping_nav2.
+     Keep this file independent: the BBS launch must not modify or depend on
+     later navigation-model edits. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="sentry_localization">
+    <xacro:property name="livox_mount_roll" value="0.0"/>
+    <xacro:property name="livox_mount_pitch" value="3.1415926"/>
+    <xacro:property name="livox_mount_yaw" value="0.0"/>
+    <xacro:property name="livox_in_imu_x" value="-0.011"/>
+    <xacro:property name="livox_in_imu_y" value="-0.02329"/>
+    <xacro:property name="livox_in_imu_z" value="0.04412"/>
+
+    <link name="base_link"/>
+    <link name="motion_link"/>
+    <link name="footprint_link"/>
+    <link name="camera_link1"/>
+    <link name="camera_link2"/>
+    <link name="zed_camera_link"/>
+    <link name="livox_frame"/>
+    <link name="imu_link"/>
+
+    <joint name="base_to_motion_link" type="fixed">
+        <origin rpy="0 0 0" xyz="-0.198 0.175 -0.576"/>
+        <parent link="base_link"/>
+        <child link="motion_link"/>
+    </joint>
+
+    <joint name="base_to_footprint_link" type="fixed">
+        <origin rpy="0 0 ${-pi / 2}" xyz="-0.15 0.0 0"/>
+        <parent link="base_link"/>
+        <child link="footprint_link"/>
+    </joint>
+
+    <joint name="base_to_imu" type="fixed">
+        <origin rpy="${livox_mount_roll} ${livox_mount_pitch} ${livox_mount_yaw}" xyz="0 0 0"/>
+        <parent link="base_link"/>
+        <child link="imu_link"/>
+    </joint>
+
+    <joint name="base_to_camera_link1" type="fixed">
+        <origin rpy="0 0 0" xyz="0 0 0.1"/>
+        <parent link="base_link"/>
+        <child link="camera_link1"/>
+    </joint>
+
+    <joint name="motion_to_camera_link2" type="fixed">
+        <origin rpy="0 0 0" xyz="-0.194 0.0192 0"/>
+        <parent link="motion_link"/>
+        <child link="camera_link2"/>
+    </joint>
+
+    <joint name="camera_link1_to_zed_camera_link" type="fixed">
+        <origin rpy="0 0 0" xyz="0 0 0"/>
+        <parent link="camera_link1"/>
+        <child link="zed_camera_link"/>
+    </joint>
+
+    <joint name="imu_to_livox" type="fixed">
+        <origin rpy="0 0 0" xyz="${livox_in_imu_x} ${livox_in_imu_y} ${livox_in_imu_z}"/>
+        <parent link="imu_link"/>
+        <child link="livox_frame"/>
+    </joint>
+</robot>

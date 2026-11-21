@@ -116,14 +116,34 @@ Candidate Engine::refine(const Cloud::ConstPtr& source,const Matrix& guess) {
   if(source->size()<static_cast<size_t>(impl_->config.min_points) || !rigid(guess)) {
     out.quality.reason="insufficient_source_or_invalid_pose";return out;
   }
-  const auto fit=registration_source(source,guess);
-  if(fit->size()<static_cast<size_t>(impl_->config.unmapped_obstacle_filter?impl_->config.min_points:20)) {
-    out.T_map_sensor=guess;out.quality=evaluate(source,guess,false);
-    out.quality.accepted=false;out.quality.reason="insufficient_static_gicp_support";return out;
+  const auto& c=impl_->config;
+  const int passes=c.unmapped_obstacle_filter?c.gicp_support_reselection_passes:1;
+  Matrix current=guess;
+  for(int pass=0;pass<passes;++pass) {
+    // Filtering at only the original coarse pose freezes out static surfaces
+    // which become valid support after the first local pose correction.
+    const auto fit=registration_source(source,current);
+    if(fit->size()<static_cast<size_t>(c.unmapped_obstacle_filter?c.min_points:20)) {
+      out.T_map_sensor=current;out.quality=evaluate(source,current,false);
+      out.quality.accepted=false;out.quality.reason="insufficient_static_gicp_support";return out;
+    }
+    const auto result=impl_->gicp->align(fit,current);
+    out.registration_source_used=fit;
+    ++out.registration_passes;
+    out.T_map_sensor=result.first;
+    // A later support update cannot turn an iteration-limited or invalid fit
+    // into a claimed converged result. Every actual registration must finish.
+    if(!result.second || !rigid(result.first)) {
+      out.quality=evaluate(source,result.first,false);return out;
+    }
+    const double translation=(result.first.block<3,1>(0,3)-current.block<3,1>(0,3)).norm();
+    const double rotation=rotation_distance(result.first,current);
+    current=result.first;
+    if(translation<=c.gicp_support_translation_epsilon_m && rotation<=c.gicp_support_rotation_epsilon_rad)break;
   }
-  const auto result=impl_->gicp->align(fit,guess);
-  out.T_map_sensor=result.first;
-  out.quality=evaluate(source,result.first,result.second);
+  // Evaluate all original valid returns, never just the retained GICP subset.
+  out.T_map_sensor=current;
+  out.quality=evaluate(source,current,true);
   return out;
 }
 SearchResult Engine::search(const Cloud::ConstPtr& source,const Matrix& gravity) {

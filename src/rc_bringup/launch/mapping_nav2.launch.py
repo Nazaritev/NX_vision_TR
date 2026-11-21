@@ -408,7 +408,7 @@ def generate_launch_description():
         Node(
             package='rviz2',
             executable='rviz2',
-            arguments=['-d', os.path.join(pkg_dir, 'rviz', 'default.rviz')],
+            arguments=['-d', os.path.join(pkg_dir, 'rviz', 'default2.rviz')],
             parameters=[{'use_sim_time': use_sim_time}],
             condition=IfCondition(use_rviz),
         ),

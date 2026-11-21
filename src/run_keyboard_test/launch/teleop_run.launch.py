@@ -8,8 +8,8 @@ def generate_launch_description():
         output='screen',
         prefix='xterm -e',
         parameters=[{
-            'speed': 0.4,   # 线速度初始值
-            'turn': 3.14,   # 角速度初始值
+            'speed': 0.5,   # 线速度初始值
+            'turn': 2.0,   # 角速度初始值
         }],
     )
     action2= launch_ros.actions.Node(

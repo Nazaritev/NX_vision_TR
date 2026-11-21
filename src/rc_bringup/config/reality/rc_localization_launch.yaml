@@ -8,7 +8,11 @@ dds_profile: local
 ros_domain_id: 0
 start_robot_state_publisher: true
 start_rviz: true
+# map: static map and verified global pose; odom: inspect robot TF before localization.
+rviz_view: map
 use_sim_time: false
 
-# Absolute path as requested. The localizer rejects missing/invalid maps.
-map_file: /home/dgut/code/Nazarite/src/rc_bringup/map/1.pcd
+# Relative to the installed rc_bringup/map directory; absolute paths remain
+# accepted for an external map, but the shipped entry is portable.
+map_file: 1.pcd
+fast_lio_config: rc_localization_fast_lio.yaml

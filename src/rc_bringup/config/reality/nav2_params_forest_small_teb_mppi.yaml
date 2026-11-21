@@ -126,7 +126,7 @@ local_costmap:
       width: 6
       height: 6
       resolution: 0.02
-      footprint: "[ [0.144, 0.724], [0.144, -0.358], [-0.534, -0.128], [-0.534, 0.494] ]"
+      footprint: "[ [0.3, 0.3], [0.3, -0.3], [-0.3, -0.3], [-0.3, 0.3] ]"
       plugins: ["obstacle_layer", "inflation_layer"] 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -171,7 +171,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0
-        inflation_radius: 0.05 #0.13 # 0.4
+        inflation_radius: 0.45 #0.13 # 0.4
 
 global_costmap:
   global_costmap:
@@ -186,7 +186,7 @@ global_costmap:
       width: 14
       height: 14
       resolution: 0.02
-      footprint: "[ [0.339, 0.31], [0.339, -0.54], [-0.339, -0.54], [-0.339, 0.31] ]"
+      footprint: "[ [0.3, 0.3], [0.3, -0.3], [-0.3, -0.3], [-0.3, 0.3] ]"
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
@@ -235,7 +235,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0
-        inflation_radius: 0.05 # 0.23 # 0.42
+        inflation_radius: 0.17 # 0.23 # 0.42
 
 controller_server:
   ros__parameters:
@@ -378,11 +378,11 @@ controller_server:
 
     MPPI_Long:
       plugin: "nav2_mppi_controller::MPPIController"
-      time_steps: 20
+      time_steps: 40
       model_dt: 0.02
       batch_size: 1200
-      vx_std: 0.4
-      vy_std: 0.4
+      vx_std: 0.40
+      vy_std: 0.40
       wz_std: 0.25
       vx_max: 1.2
       vx_min: -1.2
@@ -390,65 +390,76 @@ controller_server:
       vy_min: -1.2
       ax_max: 2.5    # 最大加速度 (m/s²)
       ax_min: -2.5   # 最大减速度 (m/s²)
+      ay_max: 2.5    # 最大加速度 (m/s²)
+      ay_min: -2.5   # 最大减速度 (m/s²)
       wz_max: 0.25
       iteration_count: 1
-      prune_distance: 1.2
+      prune_distance: 1.6
       transform_tolerance: 0.2
       temperature: 0.25
       gamma: 0.015
       motion_model: "Omni"
-      visualize: false
+      visualize: true
 
-      critics: ["ConstraintCritic", "ObstaclesCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic", "TwirlingCritic"]
+      critics: ["ConstraintCritic", "ObstaclesCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic", "TwirlingCritic","CostCritic"]
 
-      ConstraintCritic:
+      ConstraintCritic: # 惩罚不符合运动学约束的轨迹
         plugin: "mppi::critics::ConstraintCritic"
         enabled: true
         cost_power: 1
         cost_weight: 4.0
 
-      ObstaclesCritic:
+      ObstaclesCritic: # 基于代价地图惩罚靠近障碍物的轨迹
         plugin: "mppi::critics::ObstaclesCritic"
-        enabled: true
+        enabled: false
         cost_power: 1
         repulsion_weight: 4.0
         critical_weight: 25.0
         consider_footprint: true
 
-      GoalCritic:
+      CostCritic:
+        enabled: true
+        cost_power: 2
+        cost_weight: 6.0 
+        critical_cost: 20.0         # 进入临界区域时的惩罚
+        consider_footprint: true     # 是否使用完整足迹碰撞检查（计算成本更高）
+        collision_cost: 1000000.0    # 碰撞代价
+        near_goal_distance: 0.7      # 接近目标该距离内调整行为
+
+      GoalCritic: # 目标点位置
         plugin: "mppi::critics::GoalCritic"
         enabled: true
         cost_power: 2
         cost_weight: 4.0
         threshold_to_consider: 1.2
 
-      GoalAngleCritic:
+      GoalAngleCritic: # 目标点朝向
         plugin: "mppi::critics::GoalAngleCritic"
         enabled: false
         cost_power: 1
         cost_weight: 3.0
-        threshold_to_consider: 0.08
+        threshold_to_consider: 0.5
 
-      PathAlignCritic:
+      PathAlignCritic: # 贴近全局路径
         plugin: "mppi::critics::PathAlignCritic"
         enabled: true
         cost_power: 1
-        cost_weight: 4.0
-        max_path_occupancy_ratio: 0.05
-        trajectory_point_step: 2
-        threshold_to_consider: 0.4
-        offset_from_furthest: 5
+        cost_weight: 9.0
+        max_path_occupancy_ratio: 0.05 #路径被占用比例的上限，超过将禁用
+        trajectory_point_step: 2 #轨迹采样步长
+        threshold_to_consider: 0.5 #生效的最小路径长度阈值
+        offset_from_furthest: 40 #最远可达点”向后/向前取多少个路径点来计算对齐成本
         use_path_orientations: false
 
-      PathFollowCritic:
+      PathFollowCritic: # 评价依据为最远可达点
         plugin: "mppi::critics::PathFollowCritic"
         enabled: true
-        cost_power: 1
+        cost_power: 2
         cost_weight: 8.0
-        offset_from_furthest: 3
+        offset_from_furthest: 2
         threshold_to_consider: 1.2
 
-      TwirlingCritic:
+      TwirlingCritic: # 抑制机器人原地不必要的旋转
         plugin: "mppi::critics::TwirlingCritic"
         enabled: true
         cost_power: 1

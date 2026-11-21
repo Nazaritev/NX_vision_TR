@@ -58,6 +58,8 @@ TEST(Configuration, RefusesBackendFallbackAndInsufficientGravityWindow) {
   c=Config{};c.search_min[0]=NAN;EXPECT_THROW(c.validate(),std::invalid_argument);
   c=Config{};c.max_unmapped_fraction=1.;EXPECT_THROW(c.validate(),std::invalid_argument);
   c=Config{};c.min_roi_source_fraction=0.;EXPECT_THROW(c.validate(),std::invalid_argument);
+  c=Config{};c.gicp_support_reselection_passes=0;EXPECT_THROW(c.validate(),std::invalid_argument);
+  c=Config{};c.gicp_support_reselection_passes=5;EXPECT_THROW(c.validate(),std::invalid_argument);
 }
 class MapFixture : public ::testing::Test {
 protected:
@@ -92,6 +94,7 @@ TEST_F(MapFixture, PartialMapIgnoresOutsideClutterButReportsRawCoverage) {
   EXPECT_TRUE(q.accepted)<<q.reason;
   EXPECT_NEAR(q.coverage,1./3.,.001);EXPECT_GT(q.roi_coverage,.99);
   EXPECT_EQ(q.outside_map_points,cloud->size()*2);
+  EXPECT_GT(q.capped_all_mse_m2,.10);EXPECT_LT(q.capped_roi_mse_m2,.005);
   EXPECT_GE(q.unique_structure_voxels,12u);EXPECT_GT(q.structure_extent_m,1.);
   EXPECT_NEAR(q.information_ratio,clean_quality.information_ratio,1e-8);
 }
@@ -134,7 +137,7 @@ TEST_F(MapFixture, PartialMapGicpRejectsUnmodeledClutterBeforeFitting) {
   EXPECT_LT((fit.T_map_sensor.block<3,1>(0,3).norm()),.05);
 }
 TEST_F(MapFixture, RepeatedCoincidencesCannotReplaceIndependentMapStructure) {
-  config.unmapped_obstacle_filter=true;config.scan_leaf=.04;
+  config.unmapped_obstacle_filter=true;config.structure_fraction_use_unique_voxels=true;config.scan_leaf=.04;
   auto source=std::make_shared<Cloud>();
   // Hundreds of repeated valid wall returns cover only a 24 cm square.
   // They pass a raw correspondence-count check but cannot certify a pose.
@@ -190,7 +193,7 @@ TEST_F(MapFixture, GroundScanCannotBorrowWallNormalsAsStructureEvidence) {
   EXPECT_FALSE(q.accepted);EXPECT_EQ(q.reason,"inconsistent_source_target_structure");
 }
 TEST_F(MapFixture, PartialMapGroundCannotBorrowWallNormalsAfterObstacleFiltering) {
-  config.unmapped_obstacle_filter=true;
+  config.unmapped_obstacle_filter=true;config.structure_fraction_use_unique_voxels=true;
   auto wall=std::make_shared<Cloud>();
   for(int y=-15;y<=15;++y)for(int z=0;z<=30;++z)wall->emplace_back(0.f,y*.1f,z*.1f);
   pcl::io::savePCDFileBinary(path,*wall);
@@ -200,6 +203,52 @@ TEST_F(MapFixture, PartialMapGroundCannotBorrowWallNormalsAfterObstacleFiltering
   EXPECT_GT(q.roi_source_fraction,.99);
   EXPECT_EQ(q.consistent_structure_correspondences,0u);
   EXPECT_FALSE(q.accepted);
+}
+TEST_F(MapFixture, SpatialStructureRatiosRejectAPlaneWithoutIndependentWalls) {
+  config.unmapped_obstacle_filter=true;config.structure_fraction_use_unique_voxels=true;
+  auto source=std::make_shared<Cloud>();
+  for(int x=-10;x<=10;++x)for(int y=-10;y<=10;++y)
+    source->emplace_back(x*.1f,y*.1f,0.f);
+  Engine engine(config,path);auto q=engine.evaluate(source,Matrix::Identity(),true);
+  EXPECT_GT(q.roi_coverage,.99);EXPECT_GT(q.unique_matched_voxels,20u);
+  EXPECT_LT(q.consistent_structure_voxel_fraction,.05);
+  EXPECT_FALSE(q.accepted);
+}
+TEST_F(MapFixture, SpatialStructureRatiosIgnoreRepeatedGroundDensityAndRawModeRetainsItsGate) {
+  // Binary-exact spacing keeps voxel centroids/normals identical when the
+  // same physical floor samples are repeated without introducing new cells.
+  config.unmapped_obstacle_filter=true;config.structure_fraction_use_unique_voxels=true;
+  config.scan_leaf=.125;config.map_leaf=.0625;config.structure_voxel_m=.5;
+  config.normal_radius_m=.5;
+  auto arena=std::make_shared<Cloud>(),floor=std::make_shared<Cloud>();
+  for(int x=-16;x<=16;++x)for(int y=-16;y<=16;++y)
+    floor->emplace_back(x*.125f,y*.125f,0.f);
+  *arena=*floor;
+  for(int i=-16;i<=16;++i)for(int z=0;z<=32;++z) {
+    arena->emplace_back(-2.f,i*.125f,z*.125f);
+    arena->emplace_back(i*.125f,2.f,z*.125f);
+  }
+  pcl::io::savePCDFileBinary(path,*arena);
+  auto repeated=std::make_shared<Cloud>(*arena);
+  for(int repeat=0;repeat<64;++repeat) *repeated+=*floor;
+  Engine spatial(config,path);
+  auto clean=spatial.evaluate(arena,Matrix::Identity(),true);
+  auto dense=spatial.evaluate(repeated,Matrix::Identity(),true);
+  EXPECT_TRUE(clean.accepted)<<clean.reason;
+  EXPECT_TRUE(dense.accepted)<<dense.reason;
+  EXPECT_EQ(clean.unique_matched_voxels,dense.unique_matched_voxels);
+  EXPECT_EQ(clean.unique_nonground_voxels,dense.unique_nonground_voxels);
+  EXPECT_EQ(clean.unique_structure_voxels,dense.unique_structure_voxels);
+  EXPECT_DOUBLE_EQ(clean.nonground_voxel_fraction,dense.nonground_voxel_fraction);
+  EXPECT_DOUBLE_EQ(clean.consistent_structure_voxel_fraction,dense.consistent_structure_voxel_fraction);
+  EXPECT_LT(dense.nonground_fraction,config.min_nonground_fraction);
+  // The option switches only the ratio gates. It still reports the same raw
+  // values, and false must preserve the previous density-weighted rejection.
+  config.structure_fraction_use_unique_voxels=false;
+  Engine raw(config,path);auto legacy=raw.evaluate(repeated,Matrix::Identity(),true);
+  EXPECT_FALSE(legacy.accepted);EXPECT_EQ(legacy.reason,"ground_dominated");
+  EXPECT_DOUBLE_EQ(legacy.nonground_fraction,dense.nonground_fraction);
+  EXPECT_DOUBLE_EQ(legacy.consistent_structure_fraction,dense.consistent_structure_fraction);
 }
 TEST_F(MapFixture, MatchingThreeDimensionalStructureRetainsNormalSupport) {
   Engine engine(config,path);auto q=engine.evaluate(cloud,Matrix::Identity(),true);
@@ -269,6 +318,49 @@ TEST(OfficialExtension, NarrowSignedTranslationBoundsRetainLeafAcrossLevels) {
       EXPECT_LT((result.poses.front().first.block<3,1>(0,3)-truth).norm(),1e-6);
     }
   }
+}
+TEST_F(MapFixture, RejectedStrictCoarseModeDoesNotSuppressPartialOverlapRetry) {
+  auto arena=std::make_shared<Cloud>(),source=std::make_shared<Cloud>(),map=std::make_shared<Cloud>();
+  // A small three-dimensional room plus an unmodelled floor-level object.
+  // All source heights fit one 1 m BBS voxel layer, so an unrelated flat
+  // surface scores perfectly in BBS but cannot supply target wall normals.
+  for(int i=0;i<=14;++i)for(int j=0;j<=14;++j)arena->emplace_back(i*.1f,j*.1f,0.f);
+  for(int i=0;i<=14;++i)for(int k=0;k<=8;++k) {
+    arena->emplace_back(0.f,i*.1f,k*.1f);
+    arena->emplace_back(i*.1f,1.4f,k*.1f);
+  }
+  *source=*arena;
+  for(int i=20;i<=28;++i)for(int j=0;j<=14;++j)source->emplace_back(i*.1f,j*.1f,0.f);
+  for(int i=0;i<=28;++i)for(int j=0;j<=14;++j)map->emplace_back(i*.1f,j*.1f,0.f);
+  for(auto p:*arena){p.x+=6.f;map->push_back(p);}
+  pcl::io::savePCDFileBinary(path,*map);
+  config.unmapped_obstacle_filter=true;config.map_leaf=.05;config.scan_leaf=.08;config.bbs_scan_leaf=.1;
+  config.bbs_resolution=1.;config.bbs_levels=3;config.bbs_min_hit_fraction=.95;
+  config.bbs_use_nonground=false;config.bbs_filter_map_by_normals=false;
+  config.normal_radius_m=.2;config.outlier_radius=.2;config.outlier_min_neighbors=2;
+  config.roll_pitch_window_rad=0.;config.gravity_uncertainty_rad=0.;
+  config.yaw_min_rad=-.001;config.yaw_max_rad=.001;
+  config.search_min={-.01,-.01,-.01};config.search_max={6.01,.01,.01};
+  config.max_candidates=16;config.candidate_separation_m=.75;config.gicp_iterations=60;
+  config.search_budget_ms=4000;
+  Engine engine(config,path);
+  auto bbs_source=voxel(voxel(source,config.scan_leaf),config.bbs_scan_leaf);
+  auto coarse=make_backend(config,voxel(engine.map(),config.scan_leaf))->search(
+    bbs_source,Clock::now()+std::chrono::seconds(2));
+  ASSERT_TRUE(coarse.complete)<<coarse.reason;ASSERT_FALSE(coarse.poses.empty());
+  for(const auto& hint:coarse.poses) {
+    EXPECT_GT(hint.second,.95);
+    EXPECT_FALSE(engine.refine(source,hint.first).quality.accepted);
+  }
+  auto result=engine.search(source,Matrix::Identity());
+  ASSERT_TRUE(result.complete)<<result.reason;
+  bool partial_mode_evaluated=false;
+  for(const auto& candidate:result.candidates)
+    if(candidate.bbs_hit_fraction<config.bbs_min_hit_fraction && candidate.quality.evaluated &&
+       candidate.T_map_sensor(0,3)>4.5)partial_mode_evaluated=true;
+  // This assertion fails if strict nonempty coarse proposals short-circuit
+  // the phase loop before their quality is known. No mock backend is used.
+  EXPECT_TRUE(partial_mode_evaluated)<<result.reason;
 }
 
 TEST_F(MapFixture, MapCacheVersionAndLifetime) {

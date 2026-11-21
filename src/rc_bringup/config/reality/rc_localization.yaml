@@ -9,6 +9,8 @@ bbs_localizer:
     odom_frame: odom
     base_frame: base_link
     sensor_frame: imu_link
+    # Formal entry is strictly unseeded and does not subscribe to /initialpose.
+    allow_initialpose: false
     input_is_deskewed: true
     accumulation_sec: 0.15
     accumulation_max_frames: 8
@@ -93,6 +95,11 @@ bbs_localizer:
     gicp_iterations: 60
     gicp_optimizer_iterations: 12
     gicp_correspondence_m: 1.0
+    # Re-select static support after a coarse-to-fine pose update, at most twice.
+    # Set passes to 1 to restore one fixed initial support set.
+    gicp_support_reselection_passes: 2
+    gicp_support_translation_epsilon_m: 0.01
+    gicp_support_rotation_epsilon_rad: 0.01
     max_refine_translation_m: 1.2
     max_refine_rotation_rad: 0.35
     normal_min_neighbors: 6
@@ -103,6 +110,10 @@ bbs_localizer:
     min_consistent_structure_correspondences: 120
     # Count alone grows with accumulated duplicate returns; require a fraction too.
     min_consistent_structure_fraction: 0.05
+    # Optional density-independent ratios of matched target structure_voxel_m
+    # cells. false retains the existing raw-return ratios and their gates.
+    # Counts, independent structure support, coverage and degeneracy still apply.
+    structure_fraction_use_unique_voxels: false
     bbs_use_nonground: true
     bbs_filter_map_by_normals: true
     bbs_normal_z_max: 0.85

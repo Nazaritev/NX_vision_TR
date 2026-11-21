@@ -46,6 +46,7 @@ Quality Engine::evaluate(const Cloud::ConstPtr& source,const Matrix& pose,bool c
   Eigen::Matrix<double,6,6> information=Eigen::Matrix<double,6,6>::Zero();
   std::vector<int> ids(1);std::vector<float> ds(1);
   std::set<std::array<long long,3>> structure_cells;
+  std::set<std::array<long long,3>> matched_cells,nonground_cells;
   Eigen::Vector3d structure_lo=Eigen::Vector3d::Constant(INFINITY),structure_hi=-structure_lo;
   double scale=0.,matched_radius2=0.;
   // Normalize after collecting genuine correspondences. Excluded obstacles
@@ -70,17 +71,18 @@ Quality Engine::evaluate(const Cloud::ConstPtr& source,const Matrix& pose,bool c
        std::abs(source_normal.dot(normal))<cosine) {all_error+=limit2;continue;}
     ++q.correspondences;error+=ds[0];all_error+=ds[0];residuals.push_back(std::sqrt(ds[0]));
     matched_radius2+=local.squaredNorm();
+    const Eigen::Vector3d target=(*impl_->target)[ids[0]].getVector3fMap().cast<double>();
+    std::array<long long,3> cell;
+    for(int k=0;k<3;++k)cell[k]=std::llround(std::floor(target[k]/c.structure_voxel_m));
+    matched_cells.insert(cell);
     if(normal.squaredNorm()<0.5) continue;
-    ++normals;if(std::abs(normal.z())<0.8) ++nonground;
+    ++normals;if(std::abs(normal.z())<0.8) {++nonground;nonground_cells.insert(cell);}
     // A source ground return near a map wall must not borrow the wall's
     // normal as evidence of 3D structure. Require support on BOTH surfaces.
     if(std::abs(normal.z())<0.8) {
       if(source_normal.squaredNorm()>.5 && std::abs(source_normal.z())<0.8 &&
          std::abs(source_normal.dot(normal))>=cosine) {
         ++q.consistent_structure_correspondences;
-        const Eigen::Vector3d target=(*impl_->target)[ids[0]].getVector3fMap().cast<double>();
-        std::array<long long,3> cell;
-        for(int k=0;k<3;++k)cell[k]=std::llround(std::floor(target[k]/c.structure_voxel_m));
         structure_cells.insert(cell);structure_lo=structure_lo.cwiseMin(target);structure_hi=structure_hi.cwiseMax(target);
       }
     }
@@ -91,13 +93,19 @@ Quality Engine::evaluate(const Cloud::ConstPtr& source,const Matrix& pose,bool c
   if(!source->empty()) {
     q.coverage=double(q.correspondences)/source->size();
     q.roi_source_fraction=double(q.roi_source_points)/source->size();
+    q.capped_all_mse_m2=(all_error+q.outside_map_points*limit2)/source->size();
   }
   q.unmodeled_points=q.roi_source_points-q.correspondences;
   if(q.roi_source_points) {
     q.roi_coverage=double(q.correspondences)/q.roi_source_points;
-    q.capped_all_mse_m2=all_error/q.roi_source_points;
+    q.capped_roi_mse_m2=all_error/q.roi_source_points;
   }
   q.unique_structure_voxels=structure_cells.size();
+  q.unique_matched_voxels=matched_cells.size();q.unique_nonground_voxels=nonground_cells.size();
+  if(q.unique_matched_voxels) {
+    q.nonground_voxel_fraction=double(q.unique_nonground_voxels)/q.unique_matched_voxels;
+    q.consistent_structure_voxel_fraction=double(q.unique_structure_voxels)/q.unique_matched_voxels;
+  }
   if(!structure_cells.empty())q.structure_extent_m=(structure_hi-structure_lo).norm();
   if(c.unmapped_obstacle_filter && q.correspondences) {
     const double static_scale=std::max(1.,std::sqrt(matched_radius2/q.correspondences));
@@ -122,10 +130,10 @@ Quality Engine::evaluate(const Cloud::ConstPtr& source,const Matrix& pose,bool c
   else if(!c.unmapped_obstacle_filter && q.coverage<c.min_coverage) q.reason="insufficient_full_scan_coverage";
   else if(q.rmse_m>c.max_rmse_m || q.p95_m>c.max_p95_m) q.reason="large_residuals";
   else if(q.nonground_correspondences<static_cast<size_t>(c.min_nonground_correspondences)) q.reason="insufficient_nonground_correspondences";
-  else if(q.nonground_fraction<c.min_nonground_fraction) q.reason="ground_dominated";
+  else if((c.structure_fraction_use_unique_voxels?q.nonground_voxel_fraction:q.nonground_fraction)<c.min_nonground_fraction) q.reason="ground_dominated";
   else if(q.consistent_structure_correspondences<static_cast<size_t>(c.min_consistent_structure_correspondences))
     q.reason="inconsistent_source_target_structure";
-  else if(q.consistent_structure_fraction<c.min_consistent_structure_fraction)
+  else if((c.structure_fraction_use_unique_voxels?q.consistent_structure_voxel_fraction:q.consistent_structure_fraction)<c.min_consistent_structure_fraction)
     q.reason="insufficient_consistent_structure_fraction";
   else if(c.unmapped_obstacle_filter && q.unique_structure_voxels<static_cast<size_t>(c.min_unique_structure_voxels))
     q.reason="insufficient_independent_static_structure";

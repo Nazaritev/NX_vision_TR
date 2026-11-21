@@ -35,7 +35,7 @@ class Stm32Communication(Node):
     def run(self,vx=0,vy=0,vw=0):
         vx_int = int(vx * 1000)
         vy_int = int(vy * 1000)
-        vw_int = int(vw*10)
+        vw_int = int(-vw*10)
         mode = int(0)
         reserved = 0  # 保留字，当前固定填 0
         self.get_logger().info(f'(vx={vx_int/1000},vy={vy_int/1000},vw={vw_int/10})')

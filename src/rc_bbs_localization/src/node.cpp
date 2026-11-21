@@ -77,6 +77,7 @@ public:
     base_frame_=param<std::string>("base_frame","base_link");sensor_frame_=param<std::string>("sensor_frame","imu_link");
     cloud_topic_=param<std::string>("cloud_topic","/cloud_registered_body");
     odom_topic_=param<std::string>("odom_topic","/Odometry");imu_topic_=param<std::string>("imu_topic","/livox/imu");
+    allow_initialpose_=param<bool>("allow_initialpose",false);
     if(map_frame_==odom_frame_ || sensor_frame_==map_frame_ || sensor_frame_==odom_frame_ || cloud_topic_=="/cloud_registered")
       throw std::invalid_argument("Source must be a sensor-local scan; world clouds are forbidden");
     if(!param<bool>("input_is_deskewed",true)) throw std::invalid_argument("Raw moving scans unsupported: enable FAST-LIO deskewed body output");
@@ -103,7 +104,7 @@ public:
     const auto log_path=param<std::string>("metrics_file","/tmp/rc_bbs_localization_metrics.csv");
     metrics_.open(log_path,std::ios::out);
     if(!metrics_) throw std::runtime_error("Cannot write metrics_file: "+log_path);
-    metrics_<<"stamp_ns,epoch,state,reason,job_ms,search_ms,preprocess_ms,source_points,correspondences,coverage,inlier_mse_m2,inlier_rmse_m,inlier_p95_m,capped_all_mse_m2,nonground_fraction,information_ratio,bbs_hit_fraction,verification_count,time_to_tracking_ms,quality_evaluated,selected_map_gravity_z_sign,nonground_correspondences,consistent_structure_correspondences,consistent_structure_fraction,roi_source_points,outside_map_points,unmodeled_points,roi_coverage,roi_source_fraction,unique_structure_voxels,structure_extent_m\n";
+    metrics_<<"stamp_ns,epoch,state,reason,job_ms,search_ms,preprocess_ms,source_points,correspondences,coverage,inlier_mse_m2,inlier_rmse_m,inlier_p95_m,capped_all_mse_m2,nonground_fraction,information_ratio,bbs_hit_fraction,verification_count,time_to_tracking_ms,quality_evaluated,selected_map_gravity_z_sign,nonground_correspondences,consistent_structure_correspondences,consistent_structure_fraction,roi_source_points,outside_map_points,unmodeled_points,roi_coverage,roi_source_fraction,unique_structure_voxels,structure_extent_m,capped_roi_mse_m2,unique_matched_voxels,unique_nonground_voxels,nonground_voxel_fraction,consistent_structure_voxel_fraction\n";
     auto latched=rclcpp::QoS(1).reliable().transient_local();
     map_pub_=create_publisher<sensor_msgs::msg::PointCloud2>("/bbs_localization/map",latched);
     aligned_pub_=create_publisher<sensor_msgs::msg::PointCloud2>("/bbs_localization/aligned_scan",1);
@@ -156,17 +157,19 @@ public:
         scan_history_.push_back(m);
         while(scan_history_.size()>40)scan_history_.pop_front();
       });
-    initial_sub_=create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>("/initialpose",10,
-      [this](geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr m){
-        try {
-          if(m->header.frame_id!=map_frame_) throw std::invalid_argument("initialpose must be in map frame");
-          auto ns=rclcpp::Time(m->header.stamp).nanoseconds();
-          double age=(now().nanoseconds()-ns)*1e-9;
-          if(age< -0.05 || age>max_age_) throw std::invalid_argument("initialpose timestamp stale/future; click again");
-          auto pose=from_pose(m->pose.pose);
-          invalidate("rviz_initialpose_received");pending_seed_=pose;seed_stamp_=ns;
-        }catch(const std::exception& e){RCLCPP_ERROR(get_logger(),"Reject initialpose: %s",e.what());}
-      });
+    if(allow_initialpose_) {
+      initial_sub_=create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>("/initialpose",10,
+        [this](geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr m){
+          try {
+            if(m->header.frame_id!=map_frame_) throw std::invalid_argument("initialpose must be in map frame");
+            auto ns=rclcpp::Time(m->header.stamp).nanoseconds();
+            double age=(now().nanoseconds()-ns)*1e-9;
+            if(age< -0.05 || age>max_age_) throw std::invalid_argument("initialpose timestamp stale/future; click again");
+            auto pose=from_pose(m->pose.pose);
+            invalidate("rviz_initialpose_received");pending_seed_=pose;seed_stamp_=ns;
+          }catch(const std::exception& e){RCLCPP_ERROR(get_logger(),"Reject initialpose: %s",e.what());}
+        });
+    }
     reload_srv_=create_service<std_srvs::srv::Trigger>("/bbs_localization/reload_map",
       [this](const std_srvs::srv::Trigger::Request::SharedPtr,std_srvs::srv::Trigger::Response::SharedPtr r){
         invalidate("map_reload_requested");reload_=true;r->success=true;r->message="Map reload queued; current pose invalidated";
@@ -401,6 +404,18 @@ private:
   }
   void tick() {
     finish();
+    // A competing AMCL/static/localizer publisher may have emitted map->odom
+    // before this node subscribed to /tf. Query the TF buffer as well as the
+    // message callback; never publish a second map->odom chain.
+    if(!conflict_ && !have_anchor_ && tf_buffer_._frameExists(map_frame_) &&
+       tf_buffer_._frameExists(odom_frame_)) {
+      try {
+        if(tf_buffer_.canTransform(map_frame_,odom_frame_,tf2::TimePointZero)) {
+          conflict_=true;invalidate("competing_map_odom_publisher");
+          RCLCPP_ERROR(get_logger(),"Refusing localization: an existing %s->%s transform is present",map_frame_.c_str(),odom_frame_.c_str());
+        }
+      } catch(const tf2::TransformException&) {}
+    }
     if(conflict_)return;
     if(reload_ && !job_){start_map();return;}
     if((state_==State::TRACKING || state_==State::DEGRADED || state_==State::VERIFYING) &&
@@ -444,7 +459,7 @@ private:
     const auto& q=last_candidate_.quality;
     metrics_<<ns<<','<<epoch_<<','<<name(state_)<<','<<reason_<<','<<job_ms_<<','<<search_ms_<<','<<preprocess_ms_<<','
       <<q.source_points<<','<<q.correspondences<<','<<q.coverage<<','<<q.mse_m2<<','<<q.rmse_m<<','<<q.p95_m<<','
-      <<q.capped_all_mse_m2<<','<<q.nonground_fraction<<','<<q.information_ratio<<','<<last_candidate_.bbs_hit_fraction<<','<<good_<<','<<time_to_tracking_ms_<<','<<q.evaluated<<','<<selected_map_gravity_z_sign_<<','<<q.nonground_correspondences<<','<<q.consistent_structure_correspondences<<','<<q.consistent_structure_fraction<<','<<q.roi_source_points<<','<<q.outside_map_points<<','<<q.unmodeled_points<<','<<q.roi_coverage<<','<<q.roi_source_fraction<<','<<q.unique_structure_voxels<<','<<q.structure_extent_m<<'\n';metrics_.flush();
+      <<q.capped_all_mse_m2<<','<<q.nonground_fraction<<','<<q.information_ratio<<','<<last_candidate_.bbs_hit_fraction<<','<<good_<<','<<time_to_tracking_ms_<<','<<q.evaluated<<','<<selected_map_gravity_z_sign_<<','<<q.nonground_correspondences<<','<<q.consistent_structure_correspondences<<','<<q.consistent_structure_fraction<<','<<q.roi_source_points<<','<<q.outside_map_points<<','<<q.unmodeled_points<<','<<q.roi_coverage<<','<<q.roi_source_fraction<<','<<q.unique_structure_voxels<<','<<q.structure_extent_m<<','<<q.capped_roi_mse_m2<<','<<q.unique_matched_voxels<<','<<q.unique_nonground_voxels<<','<<q.nonground_voxel_fraction<<','<<q.consistent_structure_voxel_fraction<<'\n';metrics_.flush();
   }
   void status() {
     diagnostic_msgs::msg::DiagnosticArray array;array.header.stamp=now();
@@ -455,11 +470,12 @@ private:
     auto add=[&](const std::string& key,const auto& v){diagnostic_msgs::msg::KeyValue kv;kv.key=key;std::ostringstream ss;ss<<v;kv.value=ss.str();s.values.push_back(kv);};
     std::string gravity_signs;for(double sign:config_.map_gravity_z_signs)gravity_signs+=(sign>0?"+Z ":"-Z ");
     add("selected_map_gravity_z_sign",selected_map_gravity_z_sign_);add("map_gravity_hypotheses",gravity_signs);add("state",name(state_));add("pose_valid",valid);add("reason",reason_);add("backend","official_cpu+distinct_leaf_extension");
+    add("allow_initialpose",allow_initialpose_);
     add("map_version",engine_?engine_->version():"loading");add("epoch",epoch_);add("active_workers",job_?1:0);
     add("verification_count",good_);add("source_points",last_candidate_.quality.source_points);
     add("correspondences",last_candidate_.quality.correspondences);add("coverage",last_candidate_.quality.coverage);
     add("inlier_mse_m2",last_candidate_.quality.mse_m2);add("inlier_rmse_m",last_candidate_.quality.rmse_m);
-    add("inlier_p95_m",last_candidate_.quality.p95_m);add("capped_all_mse_m2",last_candidate_.quality.capped_all_mse_m2);
+    add("inlier_p95_m",last_candidate_.quality.p95_m);add("capped_all_mse_m2",last_candidate_.quality.capped_all_mse_m2);add("capped_roi_mse_m2",last_candidate_.quality.capped_roi_mse_m2);
     add("search_complete",search_complete_);add("candidate_ambiguity",search_ambiguous_);add("quality_evaluated",last_candidate_.quality.evaluated);add("gicp_converged",last_candidate_.quality.converged);add("nonground_correspondences",last_candidate_.quality.nonground_correspondences);add("nonground_fraction",last_candidate_.quality.nonground_fraction);
     add("consistent_structure_correspondences",last_candidate_.quality.consistent_structure_correspondences);
     add("consistent_structure_fraction",last_candidate_.quality.consistent_structure_fraction);
@@ -468,6 +484,11 @@ private:
     add("unmodeled_points",last_candidate_.quality.unmodeled_points);add("roi_coverage",last_candidate_.quality.roi_coverage);
     add("roi_source_fraction",last_candidate_.quality.roi_source_fraction);add("unique_structure_voxels",last_candidate_.quality.unique_structure_voxels);
     add("structure_extent_m",last_candidate_.quality.structure_extent_m);
+    add("structure_fraction_use_unique_voxels",config_.structure_fraction_use_unique_voxels);
+    add("unique_matched_voxels",last_candidate_.quality.unique_matched_voxels);
+    add("unique_nonground_voxels",last_candidate_.quality.unique_nonground_voxels);
+    add("nonground_voxel_fraction",last_candidate_.quality.nonground_voxel_fraction);
+    add("consistent_structure_voxel_fraction",last_candidate_.quality.consistent_structure_voxel_fraction);
     add("information_ratio",last_candidate_.quality.information_ratio);add("bbs_hit_fraction",last_candidate_.bbs_hit_fraction);
     add("accumulation_sec",accumulation_sec_);add("job_ms",job_ms_);add("search_ms",search_ms_);add("time_to_tracking_ms",time_to_tracking_ms_);
     add("last_verified_age_sec",verified_age);add("last_verified_receipt_age_sec",seconds(last_verified_));array.status.push_back(s);status_pub_->publish(array);
@@ -484,7 +505,7 @@ private:
   double gravity_window_,gravity_acc_tolerance_,gravity_std_,gravity_gyro_,stationary_m_;
   int required_,fail_limit_,gravity_min_samples_,good_=0,failures_=0;uint64_t epoch_=0;
   bool search_complete_=false,search_ambiguous_=false;
-  bool conflict_=false,reload_=false,have_anchor_=false,have_extrinsic_=false,seed_refining_=false;
+  bool conflict_=false,reload_=false,have_anchor_=false,have_extrinsic_=false,seed_refining_=false,allow_initialpose_=false;
   Matrix anchor_=Matrix::Identity(),last_extrinsic_=Matrix::Identity();
   std::optional<Matrix> pending_seed_;int64_t seed_stamp_=0,processed_ns_=0,verification_after_ns_=0,last_verified_ns_=0;
   std::deque<Odom> odom_;std::deque<Imu> imu_;

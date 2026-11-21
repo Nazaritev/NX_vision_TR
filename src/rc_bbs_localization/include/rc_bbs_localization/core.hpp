@@ -44,8 +44,13 @@ struct Config {
   double normal_consistency_rad = 0.5235987755982988;
   int min_consistent_structure_correspondences = 120;
   double min_consistent_structure_fraction = 0.05;
+  // Optional spatial denominator: count independently occupied target voxels
+  // rather than repeated source returns. Raw ratios remain available.
+  bool structure_fraction_use_unique_voxels = false;
   int bbs_min_structure_points = 40;
   int gicp_iterations = 35, gicp_optimizer_iterations = 12, normal_min_neighbors = 6;
+  int gicp_support_reselection_passes = 2;
+  double gicp_support_translation_epsilon_m = 0.01, gicp_support_rotation_epsilon_rad = 0.01;
   double gicp_correspondence_m = 1., match_distance_m = 0.4;
   int min_correspondences = 120, min_nonground_correspondences = 120;
   double min_coverage = 0.65, max_rmse_m = 0.22, max_p95_m = 0.35;
@@ -62,9 +67,11 @@ struct Config {
     P(min_range); P(max_range); P(outlier_radius); P(outlier_min_neighbors); P(min_points);
     P(map_abs_limit); P(bbs_use_nonground); P(bbs_filter_map_by_normals); P(map_filter_voxel_support); P(bbs_normal_z_max); P(normal_radius_m); P(bbs_min_structure_points); P(gicp_iterations); P(gicp_optimizer_iterations); P(normal_min_neighbors);
     P(unmapped_obstacle_filter); P(map_roi_margin_m); P(min_roi_source_fraction);
+    P(gicp_support_reselection_passes); P(gicp_support_translation_epsilon_m); P(gicp_support_rotation_epsilon_rad);
     P(max_unmapped_fraction); P(static_support_distance_m); P(bbs_max_unmapped_fraction);
     P(bbs_min_matched_points); P(min_unique_structure_voxels); P(structure_voxel_m); P(min_structure_extent_m);
     P(normal_consistency_rad); P(min_consistent_structure_correspondences); P(min_consistent_structure_fraction);
+    P(structure_fraction_use_unique_voxels);
     P(gicp_correspondence_m); P(match_distance_m); P(min_correspondences); P(min_nonground_correspondences); P(min_coverage);
     P(max_rmse_m); P(max_p95_m); P(min_nonground_fraction); P(min_information_ratio);
     P(ambiguity_coverage_margin); P(ambiguity_rmse_margin_m); P(max_refine_translation_m);
@@ -78,16 +85,23 @@ struct Quality {
   size_t consistent_structure_correspondences = 0;
   size_t roi_source_points = 0, outside_map_points = 0, unmodeled_points = 0;
   size_t unique_structure_voxels = 0;
+  size_t unique_matched_voxels = 0, unique_nonground_voxels = 0;
+  double nonground_voxel_fraction = 0., consistent_structure_voxel_fraction = 0.;
   double roi_coverage = 0., roi_source_fraction = 0., structure_extent_m = 0.;
   double consistent_structure_fraction = 0.;
   double coverage = 0., mse_m2 = INFINITY, rmse_m = INFINITY, p95_m = INFINITY;
   // Every unmatched source contributes match_distance_m^2 here, but not to inlier MSE.
-  double capped_all_mse_m2 = INFINITY, nonground_fraction = 0., information_ratio = 0.;
+  double capped_all_mse_m2 = INFINITY, capped_roi_mse_m2 = INFINITY;
+  double nonground_fraction = 0., information_ratio = 0.;
   bool evaluated = false, converged = false, accepted = false;
   std::string reason = "not_evaluated";
 };
 struct Candidate {
   Matrix T_map_sensor = Matrix::Identity();
+  // Last actual fit input, in the unchanged sensor frame. Immutable shared
+  // ownership keeps diagnostics faithful without copying the point cloud.
+  Cloud::ConstPtr registration_source_used;
+  int registration_passes = 0;
   Quality quality;
   double bbs_hit_fraction = NAN;
   double map_gravity_z_sign = NAN;

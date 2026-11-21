@@ -43,6 +43,8 @@ void Config::validate() const {
       candidate_separation_m<=0 || candidate_separation_rad<=0 || max_refine_translation_m<=0 || max_refine_rotation_rad<=0)
     throw std::invalid_argument("Invalid localization configuration; check positive sizes/budgets and gravity uncertainty");
   if(map_roi_margin_m<=0 || min_roi_source_fraction<=0 || min_roi_source_fraction>1 ||
+     gicp_support_reselection_passes<1 || gicp_support_reselection_passes>4 ||
+     gicp_support_translation_epsilon_m<=0 || gicp_support_rotation_epsilon_rad<=0 ||
      max_unmapped_fraction<0 || max_unmapped_fraction>=1 ||
      bbs_max_unmapped_fraction<0 || bbs_max_unmapped_fraction>=1 ||
      static_support_distance_m<match_distance_m || static_support_distance_m>gicp_correspondence_m ||

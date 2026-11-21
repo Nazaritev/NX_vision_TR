@@ -76,9 +76,9 @@ int main(int argc,char** argv) {
       }
     }
     std::ofstream csv(output/"benchmark.csv");
-    csv<<"profile,case,has_truth,valid_source,cold_map_ms,search_ms,complete,accepted,reason,candidate_count,bbs_hit_fraction,coverage,correspondences,inlier_mse_m2,inlier_rmse_m,inlier_p95_m,capped_all_mse_m2,nonground_fraction,information_ratio,translation_error_m,rotation_error_rad,consistent_structure_correspondences,consistent_structure_fraction,roi_source_points,outside_map_points,unmodeled_points,roi_coverage,roi_source_fraction,unique_structure_voxels,structure_extent_m\n";
+    csv<<"profile,case,has_truth,valid_source,cold_map_ms,search_ms,complete,accepted,reason,candidate_count,bbs_hit_fraction,coverage,correspondences,inlier_mse_m2,inlier_rmse_m,inlier_p95_m,capped_all_mse_m2,nonground_fraction,information_ratio,translation_error_m,rotation_error_rad,consistent_structure_correspondences,consistent_structure_fraction,roi_source_points,outside_map_points,unmodeled_points,roi_coverage,roi_source_fraction,unique_structure_voxels,structure_extent_m,capped_roi_mse_m2,unique_matched_voxels,unique_nonground_voxels,nonground_voxel_fraction,consistent_structure_voxel_fraction\n";
     std::ofstream diagnostics(output/"diagnostic_candidates.csv");
-    diagnostics<<"profile,case,coarse_hits,coverage,correspondences,rmse_m,p95_m,nonground_fraction,information_ratio,converged,quality_reason,global_result_accepted,consistent_structure_correspondences,consistent_structure_fraction,roi_source_points,outside_map_points,unmodeled_points,roi_coverage,roi_source_fraction,unique_structure_voxels,structure_extent_m\n";
+    diagnostics<<"profile,case,coarse_hits,coverage,correspondences,rmse_m,p95_m,nonground_fraction,information_ratio,converged,quality_reason,global_result_accepted,consistent_structure_correspondences,consistent_structure_fraction,roi_source_points,outside_map_points,unmodeled_points,roi_coverage,roi_source_fraction,unique_structure_voxels,structure_extent_m,capped_roi_mse_m2,unique_matched_voxels,unique_nonground_voxels,nonground_voxel_fraction,consistent_structure_voxel_fraction\n";
     YAML::Emitter poses;poses<<YAML::BeginMap<<YAML::Key<<"candidates"<<YAML::Value<<YAML::BeginSeq;
     for(const auto& profile:y["profiles"]) {
       Config c=config;load(c,profile);auto engine=std::make_shared<Engine>(c,map_file);
@@ -122,7 +122,7 @@ int main(int argc,char** argv) {
             auto d=engine->refine(source,hint.T_map_sensor);const auto& q=d.quality;
             diagnostics<<profile["name"].as<std::string>()<<','<<test.id<<','<<hint.bbs_hit_fraction<<','
               <<q.coverage<<','<<q.correspondences<<','<<q.rmse_m<<','<<q.p95_m<<','<<q.nonground_fraction<<','
-              <<q.information_ratio<<','<<q.converged<<','<<q.reason<<','<<result.accepted<<','<<q.consistent_structure_correspondences<<','<<q.consistent_structure_fraction<<','<<q.roi_source_points<<','<<q.outside_map_points<<','<<q.unmodeled_points<<','<<q.roi_coverage<<','<<q.roi_source_fraction<<','<<q.unique_structure_voxels<<','<<q.structure_extent_m<<'\n';diagnostics.flush();
+              <<q.information_ratio<<','<<q.converged<<','<<q.reason<<','<<result.accepted<<','<<q.consistent_structure_correspondences<<','<<q.consistent_structure_fraction<<','<<q.roi_source_points<<','<<q.outside_map_points<<','<<q.unmodeled_points<<','<<q.roi_coverage<<','<<q.roi_source_fraction<<','<<q.unique_structure_voxels<<','<<q.structure_extent_m<<','<<q.capped_roi_mse_m2<<','<<q.unique_matched_voxels<<','<<q.unique_nonground_voxels<<','<<q.nonground_voxel_fraction<<','<<q.consistent_structure_voxel_fraction<<'\n';diagnostics.flush();
             poses<<YAML::BeginMap<<YAML::Key<<"profile"<<YAML::Value<<profile["name"].as<std::string>()
               <<YAML::Key<<"case"<<YAML::Value<<test.id
               <<YAML::Key<<"global_accepted"<<YAML::Value<<result.accepted
@@ -132,7 +132,12 @@ int main(int argc,char** argv) {
               <<YAML::Key<<"consistent_structure_fraction"<<YAML::Value<<q.consistent_structure_fraction
               <<YAML::Key<<"T_map_sensor_row_major"<<YAML::Value<<YAML::Flow<<YAML::BeginSeq;
             for(int row=0;row<4;++row)for(int col=0;col<4;++col)poses<<d.T_map_sensor(row,col);
-            poses<<YAML::EndSeq<<YAML::EndMap;
+            poses<<YAML::EndSeq
+              <<YAML::Key<<"unique_matched_voxels"<<YAML::Value<<q.unique_matched_voxels
+              <<YAML::Key<<"unique_nonground_voxels"<<YAML::Value<<q.unique_nonground_voxels
+              <<YAML::Key<<"nonground_voxel_fraction"<<YAML::Value<<q.nonground_voxel_fraction
+              <<YAML::Key<<"consistent_structure_voxel_fraction"<<YAML::Value<<q.consistent_structure_voxel_fraction
+              <<YAML::EndMap;
           }
         }
         double te=NAN,re=NAN;
@@ -143,7 +148,7 @@ int main(int argc,char** argv) {
         csv<<profile["name"].as<std::string>()<<','<<test.id<<','<<test.has_truth<<','<<source->size()<<','<<engine->build_ms()<<','
           <<result.elapsed_ms<<','<<result.complete<<','<<result.accepted<<','<<result.reason<<','<<result.candidates.size()<<','
           <<best.bbs_hit_fraction<<','<<q.coverage<<','<<q.correspondences<<','<<q.mse_m2<<','<<q.rmse_m<<','<<q.p95_m<<','
-          <<q.capped_all_mse_m2<<','<<q.nonground_fraction<<','<<q.information_ratio<<','<<te<<','<<re<<','<<q.consistent_structure_correspondences<<','<<q.consistent_structure_fraction<<','<<q.roi_source_points<<','<<q.outside_map_points<<','<<q.unmodeled_points<<','<<q.roi_coverage<<','<<q.roi_source_fraction<<','<<q.unique_structure_voxels<<','<<q.structure_extent_m<<'\n';csv.flush();
+          <<q.capped_all_mse_m2<<','<<q.nonground_fraction<<','<<q.information_ratio<<','<<te<<','<<re<<','<<q.consistent_structure_correspondences<<','<<q.consistent_structure_fraction<<','<<q.roi_source_points<<','<<q.outside_map_points<<','<<q.unmodeled_points<<','<<q.roi_coverage<<','<<q.roi_source_fraction<<','<<q.unique_structure_voxels<<','<<q.structure_extent_m<<','<<q.capped_roi_mse_m2<<','<<q.unique_matched_voxels<<','<<q.unique_nonground_voxels<<','<<q.nonground_voxel_fraction<<','<<q.consistent_structure_voxel_fraction<<'\n';csv.flush();
         std::cout<<profile["name"]<<" "<<test.id<<" "<<result.elapsed_ms<<"ms "<<result.reason<<" error="<<te<<std::endl;
       }
     }

@@ -80,12 +80,35 @@ Visualization Manager:
     - Class: rviz_default_plugins/TF
       Name: TF
       Enabled: true
-      Show Names: true
+      Marker Scale: 0.15
+      Frames:
+        All Enabled: false
+        map:
+          Value: true
+        odom:
+          Value: false
+        base_link:
+          Value: true
+        footprint_link:
+          Value: true
+        motion_link:
+          Value: true
+        imu_link:
+          Value: false
+        livox_frame:
+          Value: false
+        camera_link1:
+          Value: false
+        camera_link2:
+          Value: false
+        zed_camera_link:
+          Value: false
+      Show Names: false
       Show Axes: true
       Show Arrows: true
       Frame Timeout: 1
     - Class: rviz_default_plugins/RobotModel
-      Name: Robot TF and geometry
+      Name: Robot links (current URDF has no visual geometry)
       Enabled: true
       Description Source: Topic
       Description Topic:
@@ -105,12 +128,6 @@ Visualization Manager:
     - Class: rviz_default_plugins/Interact
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select
-    - Class: rviz_default_plugins/SetInitialPose
-      Topic:
-        Value: /initialpose
-        Reliability Policy: Reliable
-        Durability Policy: Volatile
-        Depth: 5
   Views:
     Current:
       Class: rviz_default_plugins/Orbit

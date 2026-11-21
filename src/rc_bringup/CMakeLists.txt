@@ -12,6 +12,8 @@ install(PROGRAMS
   scripts/goal_distance_stop.py
   scripts/wait_for_localization.py
   scripts/gripper_pointcloud_filter.py
+  docs/rc_bbs_validation/tools/real_acceptance.py
+  docs/rc_bbs_validation/tools/audit_input_bag.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -27,6 +29,18 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_gripper_filter_ros
     test/test_gripper_filter_ros.py
     TIMEOUT 90
+  )
+  ament_add_pytest_test(test_real_acceptance
+    docs/rc_bbs_validation/tools/test_real_acceptance.py
+    TIMEOUT 60
+  )
+  ament_add_pytest_test(test_audit_input_bag
+    docs/rc_bbs_validation/tools/test_audit_input_bag.py
+    TIMEOUT 30
+  )
+  ament_add_pytest_test(test_rc_localization_launch
+    test/test_rc_localization_launch.py
+    TIMEOUT 30
   )
 endif()
 

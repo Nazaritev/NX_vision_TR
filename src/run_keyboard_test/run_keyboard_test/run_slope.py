@@ -8,7 +8,8 @@ from nav_msgs.msg import Odometry
 import threading
 import serial
 import struct
-from tur3_run_interfaces.msg import Slope
+import math
+from tur3_run_interfaces.msg import Slope,AdjYaw
 # -0.162
 # ros2 run tur3_run_test run_slope
 class ImuYawListener(Node):
@@ -22,7 +23,7 @@ class ImuYawListener(Node):
             self.imu_callback,
             10
         )
-        self.ser = serial.Serial('/dev/ttyUSB1',961200,timeout=1.0)
+        self.ser = serial.Serial('/dev/ttyUSB0',115200,timeout=1.0)
         self.continue_time = 0.0
         self.start = False
         self.start_first = True
@@ -30,6 +31,9 @@ class ImuYawListener(Node):
         self.pitch_init = 0
         self.pitch_init_bool = False
         self.pitch = 0
+        self.yaw = 0
+        self.yaw_init = 0
+        self.yaw_init_bool = False
         self.bool_slope = 0
         self.get_logger().info('imu_yaw_listener started, waiting for /imu ...')
         self.start_time = time.time()
@@ -39,13 +43,84 @@ class ImuYawListener(Node):
         self.bool_fix = True
         self.out_time_slop = None
         self.start_time_slop = None
+        self.yaw_auto = False
+        self.yaw_goal = 0
+        self.vw_yaw_first = True
+        self.vw_yaw_init = 2.4
+        self.vw_yaw_2 = 1.6
+        self.vw_yaw_3 = 0.8
+        self.vw_yaw = 0
+        self.aw_yaw = 3.0
+        self.n_adv_yaw = 0
+        self.sign = 1
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 5)
         self.bool_pitch = self.create_timer(0.1,self.bool_pitch_callback)
         self.bool_stop = self.create_timer(0.1,self.bool_stop_callback)
+        self.yaw_auto_timer = self.create_timer(0.05,self.yaw_auto_callback)
+
+    def yaw_auto_callback(self):
+        if self.yaw_auto == False:
+            return
+        yaw_change = math.atan2(math.sin(self.yaw_goal - self.yaw), math.cos(self.yaw_goal - self.yaw))
+        if abs(yaw_change)<0.01:
+            self.run(0)
+            self.vw_yaw_3 = 0.1
+            self.n_adv_yaw += 1
+            if self.n_adv_yaw == 4 :
+                self.yaw_auto = False
+                self.run(0)
+                sl = Slope()
+                sl.slope = 1
+                self.pub.publish(sl)
+                # self.vw_yaw = self.vw_yaw_2
+                self.vw_yaw_first = True
+                return
+            return
+        else:
+            self.n_adv_yaw = 0
+
+        self.sign = math.copysign(1, yaw_change)
+        if self.vw_yaw_first == True:
+            self.sign2 = self.sign
+            # self.vw_yaw_first = False
+        if self.vw_yaw == self.vw_yaw_init:
+            pass
+        else:
+            self.sign2 = self.sign
+
+        if yaw_change*self.sign2 > math.pi/3:
+            if self.vw_yaw_first == True:
+                self.vw_yaw = self.vw_yaw_init
+            self.run(vw0=self.vw_yaw*self.sign2)
+        elif yaw_change*self.sign2 > math.pi/10:
+            if self.vw_yaw_first == True:
+                self.vw_yaw = self.vw_yaw_2
+            if self.vw_yaw > self.vw_yaw_2:
+                self.vw_yaw = self.vw_yaw - self.aw_yaw*0.05
+                if self.vw_yaw < self.vw_yaw_2:
+                    self.vw_yaw = self.vw_yaw_2
+            self.run(vw0=self.vw_yaw*self.sign2)
+        else :
+        # yaw_change*self.sign2 > math.pi/10:
+            if self.vw_yaw_first == True:
+                self.vw_yaw = self.vw_yaw_3
+            if self.vw_yaw > self.vw_yaw_3:
+                self.vw_yaw = self.vw_yaw - self.aw_yaw*0.05
+                if self.vw_yaw < self.vw_yaw_3:
+                    self.vw_yaw = self.vw_yaw_3
+            self.run(vw0=self.vw_yaw*self.sign2)
+        self.vw_yaw_first = False
+
+
 
     def nav_service(self):
         self.service = self.create_subscription(Slope,'/slope',self.go_slope,5)
+        self.service = self.create_subscription(AdjYaw,'/adj_yaw',self.get_goal_yaw,5)
         self.pub = self.create_publisher(Slope,'/slope',5)
+
+    def get_goal_yaw(self,msg):
+        self.yaw_goal = msg.goal_yaw
+        self.yaw_auto = True
 
     def calc_crc8(self, data: bytes, poly: int = 0x07, init_value: int = 0x00) -> int:
         """
@@ -90,13 +165,11 @@ class ImuYawListener(Node):
         reserved = 0  # 保留字，当前固定填 0
         self.get_logger().info(f'(vx={vx_int/1000},vy={vy_int/1000},vw={vw_int/10})')
         # self.get_logger().info(f'{vw_int}')
-        frame_head = struct.pack('<B h h h B B B', 
+        frame_head = struct.pack('<B h h h B', 
                                      0xA5,       # SOF (帧头，1字节)
                                      vx_int,     # Vx (2字节)
                                      vy_int,     # Vy (2字节)
                                      vw_int,     # Vw (2字节)
-                                     flag,       # Flag (1字节)
-                                     reserved,   # Reserved (1字节)
                                      mode)       # Mode (1字节)
         data_to_crc = frame_head[1:]
         crc = self.calc_crc8(data_to_crc)
@@ -185,13 +258,17 @@ class ImuYawListener(Node):
         if self.pitch_init_bool == False and self.start == True:
             self.pitch_init = pitch
             self.pitch_init_bool = True
+        if self.yaw_init_bool == False:
+            self.yaw_init = yaw
+            self.yaw_init_bool = True
         self.pitch = pitch - self.pitch_init
+        self.yaw = yaw - self.yaw_init
         
 
         # self.get_logger().info(f'四元数: x={q.x:.4f}, y={q.y:.4f}, z={q.z:.4f}, w={q.w:.4f}')
-        if time.time() - self.start_time > 0.1:
+        if time.time() - self.start_time > 0.2:
             # self.get_logger().info(f'{self.pitch} = {pitch} - {self.pitch_init}')
-            self.get_logger().info(f'rool={rotation_euler[0]:.3f},pithch={self.pitch:.3f},yaw={rotation_euler[2]:.3f}')
+            self.get_logger().info(f'rool={roll:.3f},pithch={self.pitch:.3f},yaw={self.yaw:.3f}')
             self.start_time = time.time()
         # self.get_logger().info(f'Yaw: {yaw:.4f} rad ({yaw * 180.0 / 3.141592653589793:.2f} deg)')
 

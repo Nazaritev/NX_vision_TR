@@ -33,7 +33,7 @@ class NavToPose(BasicNavigator):
         self.vw_publisher = self.create_publisher(Twist,'/cmd_vel',10)
         self.nav_mode_client = self.create_client(UseNavToPose, '/nav_mode/slope')
         # 初始位置
-        self.pose_init(-0.45,3.2,3.1415626)
+        # self.pose_init(-0.45,3.2,3.1415626)
         # self.run_dir(vw=1.0,run_time=3.14*2)
         # self.waitUntilNav2Active()
         # # 等待开始
@@ -41,7 +41,7 @@ class NavToPose(BasicNavigator):
         #     rclpy.spin_once(self, timeout_sec=0.1)
         # self.bool_slope = False
         # # 上斜坡
-        self.nav2_mult([[1.8,3.6],[7.4,3.6],[8.1,2.2]])
+        # self.nav2_mult([[1.8,3.6],[7.4,3.6],[8.1,2.2]])
         # time.sleep(1.0)
         # self.adj_yaw_auto(0.0)
         # time.sleep(0.1)
@@ -129,14 +129,22 @@ class NavToPose(BasicNavigator):
         # self.adj_yaw_auto(-3.1415/2)
 
 
-        
+        # # 避碍测试
+        while True:
+            self.nav_pose(1.497, -0.207)
+            self.adj_yaw_auto(3.14)
+            self.nav_pose(-2.034,0.041)
+            self.adj_yaw_auto(0.0)
+        # -2.034, 0.041
 
 
         # self.camera_use()
         # self.pose_init(6.7,0.71,-3.1415/2)
         
-        #self.nav_pose(2.5,1.3)
-        #self.nav_pose(6.7,1.3)
+        # self.nav_pose(-0.953, -2.348)
+        # self.nav_pose(-2.034,0.041)
+        # self.nav_pose(1.497, -0.207)
+        # self.adj_yaw_auto(3.14)
         #self.nav_pose(2.35,1.3)
         #self.nav_pose(2.0,-0.9)
         #self.nav_pose(3.2,1.5)
