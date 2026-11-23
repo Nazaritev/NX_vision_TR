@@ -1,0 +1,257 @@
+#include "box_pose_control/serial_port.hpp"
+
+#include <gtest/gtest.h>
+
+#include <chrono>
+#include <limits>
+#include <stdexcept>
+#include <string>
+
+#include <fcntl.h>
+#include <poll.h>
+#include <pty.h>
+#include <unistd.h>
+
+namespace box_pose_control {
+namespace {
+
+TEST(VelocityFrameTest, MatchesPythonReferenceWireFormatAndCrc)
+{
+  // 由电控参考代码 struct.pack('<B h h h B', ...) + CRC8 + FF 得到。
+  const VelocityFrame expected{
+    0xa5, 0x7b, 0x00, 0xd3, 0xff, 0x00, 0x00, 0x00, 0xa1, 0xff};
+  EXPECT_EQ(encode_velocity(0.1239, -0.0459), expected);
+  const VelocityFrame reversed{
+    0xa5, 0x85, 0xff, 0x2d, 0x00, 0x00, 0x00, 0x00, 0x1f, 0xff};
+  EXPECT_EQ(encode_velocity(-0.1239, 0.0459), reversed);
+}
+
+TEST(VelocityFrameTest, ClampsBothSpeedsAtHardwareLimit)
+{
+  const auto frame = encode_velocity(2.0, -3.0);
+  EXPECT_EQ(frame[1], 0xf4);
+  EXPECT_EQ(frame[2], 0x01);
+  EXPECT_EQ(frame[3], 0x0c);
+  EXPECT_EQ(frame[4], 0xfe);
+  EXPECT_EQ(frame, encode_velocity(0.50, -0.50));
+  // 高于旧上限的速度必须原样编码，不能仍被截断到 300 mm/s。
+  const auto faster = encode_velocity(0.4, -0.4);
+  EXPECT_EQ(faster[1], 0x90);
+  EXPECT_EQ(faster[2], 0x01);
+  EXPECT_EQ(faster[3], 0x70);
+  EXPECT_EQ(faster[4], 0xfe);
+}
+
+TEST(VelocityFrameTest, EncodesZeroSpeedWithZeroAngularVelocityAndMode)
+{
+  const VelocityFrame expected{
+    0xa5, 0, 0, 0, 0, 0, 0, 0, 0, 0xff};
+  EXPECT_EQ(encode_velocity(0.0, 0.0), expected);
+  EXPECT_EQ(encode_velocity(0.0009, -0.0009), expected);
+}
+
+TEST(VelocityFrameTest, EncodesSignedGripModesAndIncludesThemInCrc)
+{
+  const VelocityFrame grip{
+    0xa5, 0, 0, 0, 0, 0, 0, 0x01, 0x07, 0xff};
+  const VelocityFrame reset{
+    0xa5, 0, 0, 0, 0, 0, 0, 0xff, 0xf3, 0xff};
+  EXPECT_EQ(encode_velocity(0.0, 0.0, 1), grip);
+  EXPECT_EQ(encode_velocity(0.0, 0.0, -1), reset);
+}
+
+class SerialPortTest : public ::testing::Test {
+protected:
+  void SetUp() override
+  {
+    int slave_fd = -1;
+    char name[128]{};
+    ASSERT_EQ(::openpty(&master_fd_, &slave_fd, name, nullptr, nullptr), 0);
+    path_ = name;
+    ::close(slave_fd);
+  }
+
+  void TearDown() override
+  {
+    if (master_fd_ >= 0) {
+      ::close(master_fd_);
+    }
+  }
+
+  VelocityFrame read_frame()
+  {
+    VelocityFrame frame{};
+    std::size_t offset = 0;
+    while (offset < frame.size()) {
+      pollfd descriptor{master_fd_, POLLIN, 0};
+      const int ready = ::poll(&descriptor, 1, 200);
+      EXPECT_EQ(ready, 1);
+      if (ready != 1) {
+        break;
+      }
+      const auto count = ::read(master_fd_, frame.data() + offset, frame.size() - offset);
+      EXPECT_GT(count, 0);
+      if (count <= 0) {
+        break;
+      }
+      offset += static_cast<std::size_t>(count);
+    }
+    EXPECT_EQ(offset, frame.size());
+    return frame;
+  }
+
+  int master_fd_ = -1;
+  std::string path_;
+};
+
+TEST_F(SerialPortTest, SendsFrameAtNonstandardBaudAndStopsOnClose)
+{
+  SerialPort serial;
+  EXPECT_FALSE(serial.is_open());
+  serial.open(path_, 961200);
+  EXPECT_TRUE(serial.is_open());
+  serial.send(0.1239, -0.0459);
+  EXPECT_EQ(read_frame(), encode_velocity(0.1239, -0.0459));
+  serial.close();
+  EXPECT_FALSE(serial.is_open());
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
+  EXPECT_NO_THROW(serial.close());
+}
+
+TEST_F(SerialPortTest, StandardBaudUsesNativeTermiosEncodingAndRaw8N1)
+{
+  SerialPort serial;
+  serial.open(path_, 115200);
+  const int observer = ::open(path_.c_str(), O_RDONLY | O_NOCTTY);
+  ASSERT_GE(observer, 0);
+  termios settings{};
+  const int result = ::tcgetattr(observer, &settings);
+  ::close(observer);
+  ASSERT_EQ(result, 0);
+  EXPECT_EQ(::cfgetispeed(&settings), B115200);
+  EXPECT_EQ(::cfgetospeed(&settings), B115200);
+  EXPECT_EQ(settings.c_cflag & CSIZE, CS8);
+  EXPECT_EQ(settings.c_cflag & (CSTOPB | PARENB | CMSPAR | CRTSCTS), 0u);
+  EXPECT_EQ(settings.c_iflag, 0u);
+  EXPECT_EQ(settings.c_oflag, 0u);
+  EXPECT_EQ(settings.c_lflag, 0u);
+  serial.send(0.1, -0.02);
+  EXPECT_EQ(read_frame(), encode_velocity(0.1, -0.02));
+  serial.close();
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
+}
+
+TEST_F(SerialPortTest, SendsGripModesAndDefaultsToZeroAfterwards)
+{
+  SerialPort serial;
+  serial.open(path_, 115200);
+  serial.send(0.0, 0.0, 1);
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0, 1));
+  serial.send(0.0, 0.0);
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
+  serial.send(0.0, 0.0, -1);
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0, -1));
+  serial.close();
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
+}
+
+TEST_F(SerialPortTest, ExclusiveLockIsReleasedForReopening)
+{
+  SerialPort first;
+  SerialPort second;
+  first.open(path_, 961200);
+  EXPECT_THROW(second.open(path_, 961200), std::runtime_error);
+  EXPECT_FALSE(second.is_open());
+  first.close();
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
+
+  EXPECT_NO_THROW(second.open(path_, 961200));
+  second.send(0.1, 0.0);
+  EXPECT_EQ(read_frame(), encode_velocity(0.1, 0.0));
+  second.close();
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
+
+  EXPECT_NO_THROW(first.open(path_, 961200));
+  first.close();
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
+}
+
+TEST_F(SerialPortTest, DestructorSendsStopFrame)
+{
+  {
+    SerialPort serial;
+    serial.open(path_, 961200);
+    serial.send(0.1, 0.0);
+    EXPECT_EQ(read_frame(), encode_velocity(0.1, 0.0));
+  }
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
+}
+
+TEST_F(SerialPortTest, DisconnectReportsErrorAndCloseReleasesDescriptor)
+{
+  SerialPort serial;
+  serial.open(path_, 961200);
+  ::close(master_fd_);
+  master_fd_ = -1;
+  EXPECT_THROW(serial.send(0.1, 0.0), std::runtime_error);
+  EXPECT_THROW(serial.close(), std::runtime_error);
+  EXPECT_FALSE(serial.is_open());
+  EXPECT_NO_THROW(serial.close());
+}
+
+TEST_F(SerialPortTest, DestructorDoesNotThrowAfterDisconnect)
+{
+  SerialPort serial;
+  serial.open(path_, 961200);
+  ::close(master_fd_);
+  master_fd_ = -1;
+}
+
+TEST_F(SerialPortTest, BackpressureTimesOutWithinOneFrameBudget)
+{
+  SerialPort serial;
+  serial.open(path_, 961200);
+  bool timed_out = false;
+  // 不读取主端，填满真实 PTY 输出队列，触发部分写入或 EAGAIN。
+  for (int frame = 0; frame < 10000; ++frame) {
+    const auto start = std::chrono::steady_clock::now();
+    try {
+      serial.send(0.1, 0.02);
+    } catch (const std::runtime_error & error) {
+      const auto elapsed = std::chrono::steady_clock::now() - start;
+      EXPECT_NE(std::string(error.what()).find("timed out"), std::string::npos);
+      EXPECT_LT(elapsed, std::chrono::milliseconds(200));
+      timed_out = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(timed_out);
+  EXPECT_THROW(serial.close(), std::runtime_error);
+  EXPECT_FALSE(serial.is_open());
+}
+
+TEST(SerialPortStateTest, OpeningMissingDeviceAndSendingWhileClosedReportErrors)
+{
+  SerialPort serial;
+  EXPECT_THROW(serial.open("/no-such-box-pose-control-device", 961200), std::runtime_error);
+  EXPECT_FALSE(serial.is_open());
+  EXPECT_THROW(serial.send(0.1, 0.0), std::runtime_error);
+}
+
+}  // namespace
+}  // namespace box_pose_control
+
+namespace box_pose_control {
+TEST(VelocityFrameTest, EncodesSignedAngularSpeedAndCrc) {
+  // 与 Python struct.pack + CRC 独立核对，且保留 mode 的第三参数兼容性。
+  const auto positive = encode_velocity(.123, -.045, 1, .39);
+  EXPECT_EQ(positive[5], 3);
+  EXPECT_EQ(positive[6], 0);
+  const auto negative = encode_velocity(.123, -.045, -1, -.39);
+  EXPECT_EQ(negative[5], 0xfd);
+  EXPECT_EQ(negative[6], 0xff);
+  EXPECT_NE(positive[8], encode_velocity(.123, -.045, 1)[8]);
+  EXPECT_THROW(encode_velocity(0, 0, 0, std::numeric_limits<double>::quiet_NaN()),
+               std::invalid_argument);
+}
+}  // namespace box_pose_control
