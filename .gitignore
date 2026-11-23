@@ -12,3 +12,10 @@ __pycache__/
 *.pyc
 src/serial/
 /src/rc_bringup/docs/
+/src/livox_ros_driver2/
+/src/box4d_bundle/
+/src/ndt_omp_ros2/
+/src/r2_mode1_bt_tree/
+/src/pointcloud_to_grid/
+/src/costmap_converter/
+/src/teb_local_planner/
