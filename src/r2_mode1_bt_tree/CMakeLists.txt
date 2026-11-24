@@ -33,6 +33,7 @@ target_link_libraries(ros_node_lib
 )
 
 ament_target_dependencies(ros_node_lib
+    serial
     nav_msgs
     rclcpp
     std_msgs
@@ -75,6 +76,8 @@ target_link_libraries(r2_mode1_bt_node
 target_link_libraries(serial_region1_mode0_test
     ${serial_LIBRARIES}
 )
+
+ament_target_dependencies(serial_region1_mode0_test serial)
 
 ament_target_dependencies(r2_mode1_bt_node
     ament_index_cpp

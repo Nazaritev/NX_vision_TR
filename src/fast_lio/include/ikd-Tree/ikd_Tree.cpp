@@ -243,7 +243,7 @@ void KD_TREE<PointType>::multi_thread_rebuild()
             /* Traverse and copy */
             if (!Rebuild_Logger.empty())
             {
-                printf("\n\n\n\n\n\n\n\n\n\n\n ERROR!!! \n\n\n\n\n\n\n\n\n");
+                // A rebuild log is expected while the background tree worker is active.
             }
             rebuild_flag = true;
             if (*Rebuild_Ptr == Root_Node)

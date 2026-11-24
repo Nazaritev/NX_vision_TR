@@ -1,4 +1,5 @@
-image: map6_1.pgm
+# Use the binary PGM. The ASCII P2 variant crashes this Nav2 map_server build.
+image: map6.pgm
 mode: trinary
 resolution: 0.05
 origin: [-11.7, -10.7, 0]

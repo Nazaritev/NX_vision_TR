@@ -1,0 +1,1 @@
+prepend-non-duplicate;LD_LIBRARY_PATH;@_user_open3d_lib_dir@

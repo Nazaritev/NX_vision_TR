@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -7,11 +8,13 @@ from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.descriptions import ParameterFile
 from nav2_common.launch import RewrittenYaml
 from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
+    SetEnvironmentVariable,
     TimerAction,
     IncludeLaunchDescription, 
 )
@@ -79,8 +82,14 @@ def generate_launch_description():
     bt_xml_file = os.path.join(
         config_dir, 'navigate_to_pose_teb_mppi_selector.xml'
     )
+    through_poses_bt_xml_file = os.path.join(config_dir, 'nav2_mult.xml')
     use_sim_time = LaunchConfiguration('use_sim_time')
     use_rviz = LaunchConfiguration('use_rviz')
+    start_stm32 = LaunchConfiguration('start_stm32')
+    set_initial_pose = LaunchConfiguration('set_initial_pose')
+    initial_pose_x = LaunchConfiguration('initial_pose_x')
+    initial_pose_y = LaunchConfiguration('initial_pose_y')
+    initial_pose_yaw = LaunchConfiguration('initial_pose_yaw')
     enable_gripper_filter = LaunchConfiguration('enable_gripper_filter')
     filter_input_topic = LaunchConfiguration('filter_input_topic')
     filtered_cloud_topic = LaunchConfiguration('filtered_cloud_topic')
@@ -88,9 +97,54 @@ def generate_launch_description():
     nav2_params = build_nav2_params(
         config_dir, use_sim_time, enable_gripper_filter, costmap_scan_topic)
 
-    actions = [
+    # Keep an inherited DDS profile for remote peers, while adding loopback
+    # discovery so nodes launched on this machine can see each other.
+    dds_uri = os.environ.get('CYCLONEDDS_URI')
+    local_dds_profile = (
+        '<CycloneDDS><Domain id="any"><Discovery><Peers>'
+        '<Peer address="127.0.0.1"/></Peers></Discovery>'
+        '</Domain></CycloneDDS>'
+    )
+    dds_actions = []
+    if dds_uri:
+        dds_actions.append(SetEnvironmentVariable(
+            'CYCLONEDDS_URI', f'{dds_uri},{local_dds_profile}'))
+
+    # The machine also has an older wheeltec_ros2 Nav2 overlay. Its map_server
+    # links against a different map_server_core ABI and crashes while activating
+    # when that overlay is ahead of the Humble libraries.
+    humble_map_server = Path('/opt/ros/humble/lib/nav2_map_server/map_server')
+    map_server_executable = str(humble_map_server) if humble_map_server.is_file() else 'map_server'
+    map_server_package = None if humble_map_server.is_file() else 'nav2_map_server'
+    map_server_env = {
+        'LD_LIBRARY_PATH': '/opt/ros/humble/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu',
+        'AMENT_PREFIX_PATH': '/opt/ros/humble',
+    } if humble_map_server.is_file() else None
+    humble_lifecycle_manager = Path(
+        '/opt/ros/humble/lib/nav2_lifecycle_manager/lifecycle_manager')
+    lifecycle_manager_executable = (
+        str(humble_lifecycle_manager)
+        if humble_lifecycle_manager.is_file() else 'lifecycle_manager')
+    lifecycle_manager_package = (
+        None if humble_lifecycle_manager.is_file() else 'nav2_lifecycle_manager')
+    humble_amcl = Path('/opt/ros/humble/lib/nav2_amcl/amcl')
+    amcl_executable = str(humble_amcl) if humble_amcl.is_file() else 'amcl'
+    amcl_package = None if humble_amcl.is_file() else 'nav2_amcl'
+
+    actions = dds_actions + [
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('use_rviz', default_value='true'),
+        DeclareLaunchArgument(
+            'start_stm32',
+            default_value='true' if Path('/dev/ttyUSB0').exists() else 'false',
+            choices=['true', 'false'],
+            description='Start the STM32 serial node when /dev/ttyUSB0 is available',
+        ),
+        DeclareLaunchArgument('set_initial_pose', default_value='false',
+                              choices=['true', 'false']),
+        DeclareLaunchArgument('initial_pose_x', default_value='0.0'),
+        DeclareLaunchArgument('initial_pose_y', default_value='0.0'),
+        DeclareLaunchArgument('initial_pose_yaw', default_value='0.0'),
         DeclareLaunchArgument('filter_input_topic', default_value='/cloud_registered'),
         DeclareLaunchArgument('filtered_cloud_topic', default_value='/cloud_registered_costmap'),
         DeclareLaunchArgument('costmap_scan_topic', default_value='/scan_costmap'),
@@ -129,6 +183,7 @@ def generate_launch_description():
             executable='stm32_communication',
             name='stm32_communication',
             output='screen',
+            condition=IfCondition(start_stm32),
             parameters=[{'use_sim_time': use_sim_time}],
         ),
         Node(
@@ -253,10 +308,11 @@ def generate_launch_description():
             }],
         ),
         Node(
-            package='nav2_map_server',
-            executable='map_server',
+            package=map_server_package,
+            executable=map_server_executable,
             name='map_server',
             output='screen',
+            additional_env=map_server_env,
             parameters=nav2_params + [{'yaml_filename': map_yaml_file}],
         ),
         #Node(
@@ -267,17 +323,26 @@ def generate_launch_description():
         #    parameters=[{'use_sim_time': use_sim_time}],
         #),
         Node(
-            package='nav2_amcl',
-            executable='amcl',
+            package=amcl_package,
+            executable=amcl_executable,
             name='amcl',
             output='screen',
-            parameters=nav2_params,
+            additional_env=map_server_env,
+            parameters=nav2_params + [{
+                'set_initial_pose': set_initial_pose,
+                'initial_pose': {
+                    'x': ParameterValue(initial_pose_x, value_type=float),
+                    'y': ParameterValue(initial_pose_y, value_type=float),
+                    'yaw': ParameterValue(initial_pose_yaw, value_type=float),
+                },
+            }],
         ),
         Node(
-            package='nav2_lifecycle_manager',
-            executable='lifecycle_manager',
+            package=lifecycle_manager_package,
+            executable=lifecycle_manager_executable,
             name='lifecycle_manager_localization',
             output='screen',
+            additional_env=map_server_env,
             parameters=[{
                 'use_sim_time': use_sim_time,
                 'autostart': True,
@@ -321,12 +386,15 @@ def generate_launch_description():
         ('nav2_planner', 'planner_server'),
         ('nav2_behaviors', 'behavior_server'),
         ('nav2_bt_navigator', 'bt_navigator'),
-        ('nav2_waypoint_follower', 'waypoint_follower'),
         ('nav2_velocity_smoother', 'velocity_smoother'),
     ]
     for package, executable in navigation_nodes:
         parameters = list(nav2_params)
         remappings = []
+        official_executable = Path('/opt/ros/humble/lib') / package / executable
+        node_package = None if official_executable.is_file() else package
+        node_executable = str(official_executable) if official_executable.is_file() else executable
+        node_env = map_server_env if official_executable.is_file() else None
         if executable in ('controller_server', 'behavior_server'):
             remappings = [('cmd_vel', '/cmd_vel_nav')]
         elif executable == 'velocity_smoother':
@@ -335,12 +403,16 @@ def generate_launch_description():
                 ('cmd_vel_smoothed', '/cmd_vel'),
             ]
         elif executable == 'bt_navigator':
-            parameters.append({'default_nav_to_pose_bt_xml': bt_xml_file})
+            parameters.append({
+                'default_nav_to_pose_bt_xml': bt_xml_file,
+                'default_nav_through_poses_bt_xml': through_poses_bt_xml_file,
+            })
         localized_actions.append(Node(
-            package=package,
-            executable=executable,
+            package=node_package,
+            executable=node_executable,
             name=executable,
             output='screen',
+            additional_env=node_env,
             parameters=parameters,
             remappings=remappings,
         ))
@@ -363,10 +435,11 @@ def generate_launch_description():
 
     localized_actions.append(
         Node(
-            package='nav2_lifecycle_manager',
-            executable='lifecycle_manager',
+            package=lifecycle_manager_package,
+            executable=lifecycle_manager_executable,
             name='lifecycle_manager_navigation',
             output='screen',
+            additional_env=map_server_env,
             parameters=[{
                 'use_sim_time': use_sim_time,
                 'autostart': True,

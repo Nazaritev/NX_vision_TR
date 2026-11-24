@@ -40,11 +40,24 @@ find_package(Boost REQUIRED COMPONENTS filesystem system)
 
 # Prefer the local Open3D 0.14.1 install tree when no explicit path is provided.
 set(_default_open3d_dir "/home/dgut/open3d141/lib/cmake/Open3D")
+set(_user_open3d_prefix "$ENV{HOME}/.local/nazarite-open3d/usr")
+set(_user_open3d_lib_dir "${_user_open3d_prefix}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
+if(NOT EXISTS "${_default_open3d_dir}/Open3DConfig.cmake")
+        set(_default_open3d_dir "${_user_open3d_lib_dir}/cmake/Open3D")
+endif()
 if(NOT Open3D_DIR AND EXISTS "${_default_open3d_dir}/Open3DConfig.cmake")
         set(Open3D_DIR "${_default_open3d_dir}" CACHE PATH "Path to Open3D CMake config")
 endif()
 
 find_package(Open3D 0.14.1 EXACT CONFIG REQUIRED)
+
+if(Open3D_DIR STREQUAL "${_user_open3d_lib_dir}/cmake/Open3D")
+        # Resolve indirect dependencies from the unprivileged Open3D install.
+        add_link_options("-Wl,-rpath-link,${_user_open3d_lib_dir}")
+        configure_file(env/open3d_library_path.dsv.in
+                "${CMAKE_CURRENT_BINARY_DIR}/open3d_library_path.dsv" @ONLY)
+        ament_environment_hooks("${CMAKE_CURRENT_BINARY_DIR}/open3d_library_path.dsv")
+endif()
 
 # Fix Open3D libraries - remove problematic .so files
 # In Ubuntu 22.04+, some libraries (librt, libc++) have different paths or are merged

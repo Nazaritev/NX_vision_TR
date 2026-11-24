@@ -10,5 +10,11 @@ log/
 build/
 __pycache__/
 *.pyc
-src/serial/
 /src/rc_bringup/docs/
+
+# Downloaded or generated artifacts that are not source assets.
+*.zip
+*.deb
+*.pt
+*.pth
+*.log

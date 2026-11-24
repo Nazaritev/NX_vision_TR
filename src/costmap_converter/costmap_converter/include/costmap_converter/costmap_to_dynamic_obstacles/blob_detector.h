@@ -92,6 +92,10 @@ public:
   //! Update internal parameters
   void updateParameters(const cv::SimpleBlobDetector::Params& parameters);
 
+  // Also implement the parameter interface required by newer OpenCV releases.
+  void setParams(const cv::SimpleBlobDetector::Params& parameters) { updateParameters(parameters); }
+  cv::SimpleBlobDetector::Params getParams() const { return params_; }
+
 protected:
   struct Center
   {

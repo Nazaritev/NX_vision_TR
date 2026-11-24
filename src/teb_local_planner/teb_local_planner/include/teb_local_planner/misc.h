@@ -42,6 +42,7 @@
 #include <builtin_interfaces/msg/duration.hpp>
 
 #include <Eigen/Core>
+#include <g2o/stuff/misc.h>
 
 #include <cmath>
 #include <exception>
@@ -218,19 +219,5 @@ void teb_assert_msg_impl(const T expression, ARGS ...args) {
 #define TEB_ASSERT_MSG(expression, ...) teb_assert_msg_impl(expression, __VA_ARGS__)
 
 } // namespace teb_local_planner
-
-namespace g2o
-{
-template <typename T>
-inline int sign(const T& value)
-{
-  return teb_local_planner::signum(value);
-}
-
-inline double average_angle(double angle1, double angle2)
-{
-  return teb_local_planner::average_angle(angle1, angle2);
-}
-} // namespace g2o
 
 #endif /* MISC_H */
